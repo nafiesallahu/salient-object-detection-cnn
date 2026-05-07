@@ -12,6 +12,40 @@ import torchvision.transforms.functional as TF
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+AUGMENTATION_STRENGTHS = {
+    "none": {
+        "padding_divisor": 16,
+        "min_padding": 0,
+        "rotation_degrees": 0.0,
+        "brightness": (1.0, 1.0),
+        "contrast": None,
+        "scale_range": (1.0, 1.0),
+    },
+    "light": {
+        "padding_divisor": 16,
+        "min_padding": 4,
+        "rotation_degrees": 10.0,
+        "brightness": (0.8, 1.2),
+        "contrast": None,
+        "scale_range": (1.0, 1.25),
+    },
+    "strong": {
+        "padding_divisor": 8,
+        "min_padding": 8,
+        "rotation_degrees": 20.0,
+        "brightness": (0.7, 1.3),
+        "contrast": (0.85, 1.15),
+        "scale_range": (1.0, 1.4),
+    },
+}
+
+
+def validate_augmentation_strength(value: str) -> str:
+    strength = value.lower()
+    if strength not in AUGMENTATION_STRENGTHS:
+        valid_values = ", ".join(AUGMENTATION_STRENGTHS)
+        raise ValueError(f"augmentation_strength must be one of: {valid_values}")
+    return strength
 
 
 def resolve_data_dir(data_dir: str) -> Path:
@@ -102,13 +136,19 @@ class PreprocessedDUTSDataset(Dataset):
         split: str = "train",
         image_size: int | None = None,
         augment: bool = False,
+        augmentation_strength: str = "light",
     ) -> None:
         if split not in {"train", "val", "test"}:
             raise ValueError("split must be one of: train, val, test")
 
         self.data_dir = resolve_data_dir(data_dir)
         self.split = split
-        self.augment = augment and split == "train"
+        self.augmentation_strength = validate_augmentation_strength(augmentation_strength)
+        self.augment = (
+            augment
+            and split == "train"
+            and self.augmentation_strength != "none"
+        )
 
         manifest_path = self.data_dir / "manifest.json"
         if not manifest_path.exists():
@@ -151,11 +191,16 @@ class PreprocessedDUTSDataset(Dataset):
     def _apply_train_augmentations(
         self, image: torch.Tensor, mask: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        config = AUGMENTATION_STRENGTHS[self.augmentation_strength]
+
         if random.random() < 0.5:
             image = TF.hflip(image)
             mask = TF.hflip(mask)
 
-        padding = max(4, self.image_size // 16)
+        padding = max(
+            int(config["min_padding"]),
+            self.image_size // int(config["padding_divisor"]),
+        )
         image = TF.pad(image, padding, padding_mode="reflect")
         mask = TF.pad(mask, padding, fill=0, padding_mode="constant")
 
@@ -166,7 +211,8 @@ class PreprocessedDUTSDataset(Dataset):
         image = TF.crop(image, top, left, self.image_size, self.image_size)
         mask = TF.crop(mask, top, left, self.image_size, self.image_size)
 
-        angle = random.uniform(-10.0, 10.0)
+        max_angle = float(config["rotation_degrees"])
+        angle = random.uniform(-max_angle, max_angle)
         image = TF.rotate(
             image,
             angle,
@@ -180,8 +226,15 @@ class PreprocessedDUTSDataset(Dataset):
             fill=0.0,
         )
 
-        brightness_factor = random.uniform(0.8, 1.2)
+        brightness_min, brightness_max = config["brightness"]
+        brightness_factor = random.uniform(float(brightness_min), float(brightness_max))
         image = TF.adjust_brightness(image, brightness_factor)
+
+        contrast_range = config["contrast"]
+        if contrast_range is not None:
+            contrast_min, contrast_max = contrast_range
+            contrast_factor = random.uniform(float(contrast_min), float(contrast_max))
+            image = TF.adjust_contrast(image, contrast_factor)
 
         return torch.clamp(image, 0.0, 1.0), torch.clamp(mask, 0.0, 1.0)
 
@@ -232,6 +285,7 @@ class DUTSDataset(Dataset):
         val_split: float = 0.15,
         test_split: float = 0.15,
         seed: int = 42,
+        augmentation_strength: str = "light",
     ) -> None:
         if split not in {"train", "val", "test"}:
             raise ValueError("split must be one of: train, val, test")
@@ -239,7 +293,12 @@ class DUTSDataset(Dataset):
         self.data_dir = resolve_data_dir(data_dir)
         self.split = split
         self.image_size = image_size
-        self.augment = augment and split == "train"
+        self.augmentation_strength = validate_augmentation_strength(augmentation_strength)
+        self.augment = (
+            augment
+            and split == "train"
+            and self.augmentation_strength != "none"
+        )
         self.train_split = train_split
         self.val_split = val_split
         self.test_split = test_split
@@ -268,7 +327,11 @@ class DUTSDataset(Dataset):
     def _apply_train_transforms(
         self, image: Image.Image, mask: Image.Image
     ) -> Tuple[Image.Image, Image.Image]:
-        random_size = int(self.image_size * random.uniform(1.0, 1.25))
+        config = AUGMENTATION_STRENGTHS[self.augmentation_strength]
+        scale_min, scale_max = config["scale_range"]
+        random_size = int(
+            self.image_size * random.uniform(float(scale_min), float(scale_max))
+        )
         image = TF.resize(image, [random_size, random_size], InterpolationMode.BILINEAR)
         mask = TF.resize(mask, [random_size, random_size], InterpolationMode.NEAREST)
 
@@ -281,12 +344,20 @@ class DUTSDataset(Dataset):
             image = TF.hflip(image)
             mask = TF.hflip(mask)
 
-        angle = random.uniform(-10.0, 10.0)
+        max_angle = float(config["rotation_degrees"])
+        angle = random.uniform(-max_angle, max_angle)
         image = TF.rotate(image, angle, interpolation=InterpolationMode.BILINEAR, fill=0)
         mask = TF.rotate(mask, angle, interpolation=InterpolationMode.NEAREST, fill=0)
 
-        brightness_factor = random.uniform(0.8, 1.2)
+        brightness_min, brightness_max = config["brightness"]
+        brightness_factor = random.uniform(float(brightness_min), float(brightness_max))
         image = TF.adjust_brightness(image, brightness_factor)
+
+        contrast_range = config["contrast"]
+        if contrast_range is not None:
+            contrast_min, contrast_max = contrast_range
+            contrast_factor = random.uniform(float(contrast_min), float(contrast_max))
+            image = TF.adjust_contrast(image, contrast_factor)
 
         return image, mask
 
@@ -336,18 +407,25 @@ def create_datasets(
     test_split: float = 0.15,
     seed: int = 42,
     use_preprocessed: bool = True,
+    augmentation_strength: str = "light",
 ):
     dataset_class = PreprocessedDUTSDataset if use_preprocessed else DUTSDataset
     common_kwargs = {"data_dir": data_dir, "image_size": image_size}
 
     if use_preprocessed:
-        train_dataset = dataset_class(split="train", augment=True, **common_kwargs)
+        train_dataset = dataset_class(
+            split="train",
+            augment=True,
+            augmentation_strength=augmentation_strength,
+            **common_kwargs,
+        )
         val_dataset = dataset_class(split="val", augment=False, **common_kwargs)
         test_dataset = dataset_class(split="test", augment=False, **common_kwargs)
     else:
         train_dataset = dataset_class(
             split="train",
             augment=True,
+            augmentation_strength=augmentation_strength,
             train_split=train_split,
             val_split=val_split,
             test_split=test_split,
@@ -386,6 +464,7 @@ def create_dataloaders(
     test_split: float = 0.15,
     seed: int = 42,
     use_preprocessed: bool = True,
+    augmentation_strength: str = "light",
 ):
     train_dataset, val_dataset, test_dataset = create_datasets(
         data_dir=data_dir,
@@ -395,6 +474,7 @@ def create_dataloaders(
         test_split=test_split,
         seed=seed,
         use_preprocessed=use_preprocessed,
+        augmentation_strength=augmentation_strength,
     )
 
     train_loader = DataLoader(

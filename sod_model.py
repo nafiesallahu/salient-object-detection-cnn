@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+MODEL_TYPES = ("baseline", "baseline_no_bn", "unet_small")
+
+
 class ConvBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, dropout: float = 0.0) -> None:
         super().__init__()
@@ -25,36 +28,58 @@ class ConvBlock(nn.Module):
 class BaselineSODCNN(nn.Module):
     """Simple scratch-built encoder-decoder CNN for saliency masks."""
 
-    def __init__(self) -> None:
+    def __init__(self, use_batchnorm: bool = True) -> None:
         super().__init__()
-        self.enc1 = self._encoder_layer(3, 32)
-        self.enc2 = self._encoder_layer(32, 64)
-        self.enc3 = self._encoder_layer(64, 128)
-        self.enc4 = self._encoder_layer(128, 256)
+        self.enc1 = self._encoder_layer(3, 32, use_batchnorm)
+        self.enc2 = self._encoder_layer(32, 64, use_batchnorm)
+        self.enc3 = self._encoder_layer(64, 128, use_batchnorm)
+        self.enc4 = self._encoder_layer(128, 256, use_batchnorm)
 
-        self.up4 = self._decoder_layer(256, 128)
-        self.up3 = self._decoder_layer(128, 64)
-        self.up2 = self._decoder_layer(64, 32)
-        self.up1 = self._decoder_layer(32, 16)
+        self.up4 = self._decoder_layer(256, 128, use_batchnorm)
+        self.up3 = self._decoder_layer(128, 64, use_batchnorm)
+        self.up2 = self._decoder_layer(64, 32, use_batchnorm)
+        self.up1 = self._decoder_layer(32, 16, use_batchnorm)
 
         self.output_conv = nn.Conv2d(16, 1, kernel_size=1)
 
     @staticmethod
-    def _encoder_layer(in_channels: int, out_channels: int) -> nn.Sequential:
-        return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-        )
+    def _encoder_layer(
+        in_channels: int,
+        out_channels: int,
+        use_batchnorm: bool,
+    ) -> nn.Sequential:
+        layers = [
+            nn.Conv2d(
+                in_channels,
+                out_channels,
+                kernel_size=3,
+                padding=1,
+                bias=not use_batchnorm,
+            ),
+        ]
+        if use_batchnorm:
+            layers.append(nn.BatchNorm2d(out_channels))
+        layers.extend([nn.ReLU(inplace=True), nn.MaxPool2d(kernel_size=2, stride=2)])
+        return nn.Sequential(*layers)
 
     @staticmethod
-    def _decoder_layer(in_channels: int, out_channels: int) -> nn.Sequential:
-        return nn.Sequential(
-            nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-        )
+    def _decoder_layer(
+        in_channels: int,
+        out_channels: int,
+        use_batchnorm: bool,
+    ) -> nn.Sequential:
+        layers = [
+            nn.ConvTranspose2d(
+                in_channels,
+                out_channels,
+                kernel_size=2,
+                stride=2,
+            ),
+        ]
+        if use_batchnorm:
+            layers.append(nn.BatchNorm2d(out_channels))
+        layers.append(nn.ReLU(inplace=True))
+        return nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         input_size = x.shape[-2:]
@@ -74,11 +99,21 @@ class BaselineSODCNN(nn.Module):
         return torch.sigmoid(logits)
 
 
+class BaselineSODCNNNoBatchNorm(BaselineSODCNN):
+    """Same baseline architecture with BatchNorm layers removed for ablation."""
+
+    def __init__(self) -> None:
+        super().__init__(use_batchnorm=False)
+
+
 class SmallUNet(nn.Module):
     """Small UNet-style encoder-decoder with skip connections."""
 
     def __init__(self, dropout: float = 0.1) -> None:
         super().__init__()
+        if dropout < 0 or dropout >= 1:
+            raise ValueError("dropout must be in the range [0, 1).")
+
         self.enc1 = ConvBlock(3, 32)
         self.enc2 = ConvBlock(32, 64)
         self.enc3 = ConvBlock(64, 128)
@@ -136,10 +171,12 @@ class SmallUNet(nn.Module):
         return torch.sigmoid(logits)
 
 
-def get_model(model_type: str = "baseline") -> nn.Module:
+def get_model(model_type: str = "baseline", dropout: float = 0.1) -> nn.Module:
     model_type = model_type.lower()
     if model_type == "baseline":
         return BaselineSODCNN()
+    if model_type == "baseline_no_bn":
+        return BaselineSODCNNNoBatchNorm()
     if model_type == "unet_small":
-        return SmallUNet()
-    raise ValueError("model_type must be either 'baseline' or 'unet_small'")
+        return SmallUNet(dropout=dropout)
+    raise ValueError(f"model_type must be one of: {', '.join(MODEL_TYPES)}")

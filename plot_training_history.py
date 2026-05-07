@@ -2,6 +2,7 @@ import argparse
 import csv
 import os
 from pathlib import Path
+import re
 from tempfile import gettempdir
 from typing import Dict, List, Mapping, Sequence
 
@@ -16,6 +17,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from metrics import HISTORY_KEYS, METRIC_NAMES, initialize_history, load_history_json
+from sod_model import MODEL_TYPES
 
 
 METRIC_TITLES = {
@@ -35,6 +37,12 @@ def resolve_path(path_value: str, project_dir: Path) -> Path:
     return (project_dir / path).resolve()
 
 
+def safe_experiment_name(value: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    name = name.strip("._-")
+    return name or "experiment"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plot saved training metrics history.")
     parser.add_argument(
@@ -47,8 +55,17 @@ def parse_args() -> argparse.Namespace:
         "--model_type",
         type=str,
         default="baseline",
-        choices=["baseline", "unet_small"],
+        choices=list(MODEL_TYPES),
         help="Model type used to choose the default history path.",
+    )
+    parser.add_argument(
+        "--experiment_name",
+        type=str,
+        default=None,
+        help=(
+            "Optional run name used to choose training_history_<experiment_name>.json "
+            "when --history is not provided."
+        ),
     )
     parser.add_argument(
         "--output_dir",
@@ -184,13 +201,18 @@ def plot_training_history(
 def main() -> None:
     args = parse_args()
     project_dir = Path(__file__).resolve().parent
+    default_name = (
+        safe_experiment_name(args.experiment_name)
+        if args.experiment_name
+        else args.model_type
+    )
     history_path = (
         resolve_path(args.history, project_dir)
         if args.history
-        else project_dir / "outputs" / "metrics" / f"training_history_{args.model_type}.json"
+        else project_dir / "outputs" / "metrics" / f"training_history_{default_name}.json"
     )
     output_dir = resolve_path(args.output_dir, project_dir)
-    prefix = args.prefix or args.model_type
+    prefix = args.prefix or default_name
 
     history = load_history(history_path)
     output_paths = plot_training_history(history, output_dir, prefix)

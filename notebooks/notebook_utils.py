@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -54,14 +55,15 @@ def run_command_live(args: Sequence[object], *, check: bool = True) -> subproces
     process = subprocess.Popen(
         command,
         cwd=PROJECT_DIR,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         bufsize=1,
     )
     if process.stdout is not None:
-        for line in process.stdout:
-            print(line, end="")
+        for chunk in iter(lambda: process.stdout.read(1), ""):
+            print(chunk, end="", flush=True)
     returncode = process.wait()
     if check and returncode != 0:
         raise subprocess.CalledProcessError(returncode, command)

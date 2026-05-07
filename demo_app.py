@@ -7,7 +7,7 @@ import streamlit as st
 import torch
 
 from device_utils import get_available_device
-from sod_model import get_model
+from sod_model import MODEL_TYPES, get_model
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -51,7 +51,7 @@ def main() -> None:
     st.title("Salient Object Detection")
 
     image_size = st.sidebar.number_input("Image size", min_value=64, max_value=512, value=128, step=32)
-    fallback_model_type = st.sidebar.selectbox("Fallback model type", ["baseline", "unet_small"])
+    fallback_model_type = st.sidebar.selectbox("Fallback model type", list(MODEL_TYPES))
 
     uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png", "bmp", "webp"])
 

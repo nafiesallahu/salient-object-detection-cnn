@@ -28,5 +28,18 @@ def iou_loss(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     return 1.0 - soft_iou(predictions, targets)
 
 
-def combined_loss(predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-    return bce_loss(predictions, targets) + 0.5 * iou_loss(predictions, targets)
+def combined_loss(
+    predictions: torch.Tensor,
+    targets: torch.Tensor,
+    bce_weight: float = 1.0,
+    iou_weight: float = 0.5,
+) -> torch.Tensor:
+    if bce_weight < 0 or iou_weight < 0:
+        raise ValueError("Loss weights must be non-negative.")
+    if bce_weight == 0 and iou_weight == 0:
+        raise ValueError("At least one loss weight must be greater than zero.")
+
+    return (
+        bce_weight * bce_loss(predictions, targets)
+        + iou_weight * iou_loss(predictions, targets)
+    )

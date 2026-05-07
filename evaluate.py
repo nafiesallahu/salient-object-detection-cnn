@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+import re
 
 import torch
 from torch.utils.data import DataLoader
@@ -9,7 +10,7 @@ from tqdm import tqdm
 from data_loader import DUTSDataset, PreprocessedDUTSDataset
 from device_utils import get_available_device
 from metrics import empty_metric_totals, finalize_metric_totals, update_metric_totals
-from sod_model import get_model
+from sod_model import MODEL_TYPES, get_model
 
 
 def resolve_path(path_value: str, project_dir: Path) -> Path:
@@ -17,6 +18,12 @@ def resolve_path(path_value: str, project_dir: Path) -> Path:
     if path.is_absolute():
         return path
     return (project_dir / path).resolve()
+
+
+def safe_experiment_name(value: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    name = name.strip("._-")
+    return name or "experiment"
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,7 +40,7 @@ def parse_args() -> argparse.Namespace:
         "--model_type",
         type=str,
         default="baseline",
-        choices=["baseline", "unet_small"],
+        choices=list(MODEL_TYPES),
         help="Model architecture used by the checkpoint.",
     )
     parser.add_argument("--num_workers", type=int, default=2, help="DataLoader worker count.")
@@ -47,6 +54,15 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="checkpoints/best_model.pth",
         help="Path to best model checkpoint.",
+    )
+    parser.add_argument(
+        "--experiment_name",
+        type=str,
+        default=None,
+        help=(
+            "Optional run name used to also save outputs/metrics/"
+            "test_metrics_<experiment_name>.json."
+        ),
     )
     return parser.parse_args()
 
@@ -121,6 +137,13 @@ def main() -> None:
     with open(metrics_path, "w", encoding="utf-8") as file:
         json.dump(final_metrics, file, indent=2)
 
+    experiment_metrics_path = None
+    if args.experiment_name:
+        experiment_name = safe_experiment_name(args.experiment_name)
+        experiment_metrics_path = metrics_dir / f"test_metrics_{experiment_name}.json"
+        with open(experiment_metrics_path, "w", encoding="utf-8") as file:
+            json.dump(final_metrics, file, indent=2)
+
     print("\nTest metrics")
     print(f"IoU:       {final_metrics['iou']:.4f}")
     print(f"Precision: {final_metrics['precision']:.4f}")
@@ -129,6 +152,8 @@ def main() -> None:
     print(f"MAE:       {final_metrics['mae']:.4f}")
     print(f"MSE:       {final_metrics['mse']:.4f}")
     print(f"Metrics saved to: {metrics_path}")
+    if experiment_metrics_path is not None:
+        print(f"Experiment metrics saved to: {experiment_metrics_path}")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ import argparse
 import os
 from pathlib import Path
 from tempfile import gettempdir
+import re
 
 MPLCONFIGDIR = Path(gettempdir()) / "sod_matplotlib_cache"
 MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
@@ -19,7 +20,7 @@ from tqdm import tqdm
 
 from data_loader import DUTSDataset, PreprocessedDUTSDataset
 from device_utils import get_available_device
-from sod_model import get_model
+from sod_model import MODEL_TYPES, get_model
 
 
 def resolve_path(path_value: str, project_dir: Path) -> Path:
@@ -27,6 +28,25 @@ def resolve_path(path_value: str, project_dir: Path) -> Path:
     if path.is_absolute():
         return path
     return (project_dir / path).resolve()
+
+
+def safe_folder_name(value: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    name = name.strip("._-")
+    return name or "experiment"
+
+
+def infer_experiment_name(model_type: str, checkpoint_path: Path) -> str:
+    checkpoint_stem = checkpoint_path.stem
+    for prefix in ("best_model_", "latest_"):
+        if checkpoint_stem.startswith(prefix):
+            checkpoint_stem = checkpoint_stem[len(prefix):]
+            break
+
+    if checkpoint_stem in {"best_model", "latest_checkpoint"}:
+        checkpoint_stem = model_type
+
+    return safe_folder_name(checkpoint_stem)
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,7 +62,7 @@ def parse_args() -> argparse.Namespace:
         "--model_type",
         type=str,
         default="baseline",
-        choices=["baseline", "unet_small"],
+        choices=list(MODEL_TYPES),
         help="Model architecture used by the checkpoint.",
     )
     parser.add_argument(
@@ -52,6 +72,21 @@ def parse_args() -> argparse.Namespace:
         help="Path to best model checkpoint.",
     )
     parser.add_argument("--num_samples", type=int, default=10, help="Number of examples to save.")
+    parser.add_argument(
+        "--experiment_name",
+        type=str,
+        default=None,
+        help=(
+            "Name of the experiment subfolder inside outputs/visualizations. "
+            "Defaults to the checkpoint name, or model_type for checkpoints/best_model.pth."
+        ),
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="outputs/visualizations",
+        help="Base directory where experiment visualization folders are saved.",
+    )
     parser.add_argument(
         "--use_raw_data",
         action="store_true",
@@ -73,8 +108,6 @@ def main() -> None:
     project_dir = Path(__file__).resolve().parent
     data_dir = resolve_path(args.data_dir, project_dir)
     checkpoint_path = resolve_path(args.checkpoint, project_dir)
-    output_dir = project_dir / "outputs" / "visualizations"
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     if not checkpoint_path.exists():
         typed_checkpoint = project_dir / "checkpoints" / f"best_model_{args.model_type}.pth"
@@ -85,12 +118,22 @@ def main() -> None:
                 f"No checkpoint found at {checkpoint_path} or {typed_checkpoint}."
             )
 
+    experiment_name = (
+        safe_folder_name(args.experiment_name)
+        if args.experiment_name
+        else infer_experiment_name(args.model_type, checkpoint_path)
+    )
+    output_base_dir = resolve_path(args.output_dir, project_dir)
+    output_dir = output_base_dir / experiment_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     device = get_available_device()
     print("=" * 70)
     print("Generating Saliency Visualizations")
     print(f"Data directory: {data_dir}")
     print(f"Data mode: {'raw DUTS' if args.use_raw_data else 'preprocessed tensors'}")
     print(f"Checkpoint: {checkpoint_path}")
+    print(f"Experiment: {experiment_name}")
     print(f"Saving to: {output_dir}")
     print("=" * 70)
 

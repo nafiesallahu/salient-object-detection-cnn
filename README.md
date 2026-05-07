@@ -14,7 +14,7 @@ This repository is intentionally built around **scratch-designed CNN encoder-dec
 ## Project Highlights
 
 - End-to-end SOD workflow covering preprocessing, training, evaluation, visualization, and interactive inference.
-- Two scratch-built model options: a baseline encoder-decoder CNN and a compact UNet-style model with skip connections.
+- Three scratch-built model options: a baseline encoder-decoder CNN, a no-BatchNorm baseline ablation, and a compact UNet-style model with skip connections.
 - DUTS image/mask pairing, reshuffling, and reproducible `70% / 15% / 15%` train-validation-test splitting.
 - Training history saved after every epoch in both JSON and CSV formats.
 - Checkpointing, resume support, validation monitoring, and early stopping.
@@ -66,6 +66,8 @@ salient-object-detection-cnn/
 ├── checkpoints/
 ├── outputs/
 │   ├── visualizations/
+│   │   ├── baseline/
+│   │   └── unet_small/
 │   └── metrics/
 ├── notebooks/
 │   ├── 01_data_preprocessing.ipynb
@@ -158,20 +160,26 @@ Preprocessing performs the expensive fixed work once:
 - normalizes image and mask pixel values to `[0, 1]` during loading;
 - writes a `manifest.json` file with split metadata and sample paths.
 
-Training still applies lightweight random augmentation to the preprocessed training split.
+Training applies configurable random augmentation to the preprocessed training split.
 
 ## Training
 
 Train the baseline encoder-decoder model:
 
 ```bash
-python train.py --data_dir pre-processed --image_size 128 --batch_size 16 --epochs 25 --lr 1e-3 --model_type baseline
+python train.py --data_dir pre-processed --image_size 128 --batch_size 16 --epochs 25 --lr 1e-3 --model_type baseline --experiment_name baseline --augmentation_strength light --bce_weight 1.0 --iou_weight 0.5
 ```
 
-Train the small UNet-style model with skip connections:
+Train the no-BatchNorm baseline ablation for Experiment 2:
 
 ```bash
-python train.py --data_dir pre-processed --image_size 128 --batch_size 16 --epochs 25 --lr 1e-3 --model_type unet_small
+python train.py --data_dir pre-processed --image_size 128 --batch_size 16 --epochs 25 --lr 1e-3 --model_type baseline_no_bn --experiment_name baseline_no_bn --augmentation_strength light --bce_weight 1.0 --iou_weight 0.5
+```
+
+Train an improved small UNet-style model. This run changes more than two things after the baseline: deeper convolution blocks, skip connections, dropout, stronger augmentation, lower learning rate, and heavier IoU loss weighting.
+
+```bash
+python train.py --data_dir pre-processed --image_size 128 --batch_size 16 --epochs 25 --lr 5e-4 --model_type unet_small --experiment_name improved --dropout 0.3 --augmentation_strength strong --bce_weight 1.0 --iou_weight 0.75
 ```
 
 The trainer automatically selects the best available device in this order: CUDA, Apple Silicon MPS, then CPU.
@@ -179,54 +187,60 @@ The trainer automatically selects the best available device in this order: CUDA,
 Training includes:
 
 - preprocessed data loading instead of raw image resizing every epoch;
-- train-time augmentation with horizontal flip, padded random crop, brightness adjustment, and small rotation;
-- combined loss: `BCE + 0.5 * IoU loss`;
+- configurable train-time augmentation with `none`, `light`, or `strong` policies;
+- configurable combined loss, defaulting to `BCE + 0.5 * IoU loss`;
 - Adam optimizer;
 - validation after every epoch;
 - epoch-level train and validation metrics;
 - JSON and CSV training history persistence after every epoch;
-- best-model checkpointing by validation loss;
+- run-specific best-model checkpointing by validation loss;
 - latest-checkpoint saving after every epoch;
 - early stopping with patience `5` by default.
 
 ## Resume Training
 
-Resume from the latest checkpoint for the selected model type:
+Training automatically resumes from the latest checkpoint for the selected run name when one exists:
 
 ```bash
-python train.py --data_dir pre-processed --image_size 128 --batch_size 16 --epochs 25 --lr 1e-3 --model_type unet_small --resume
+python train.py --data_dir pre-processed --image_size 128 --batch_size 16 --epochs 25 --lr 5e-4 --model_type unet_small --experiment_name improved --dropout 0.3 --augmentation_strength strong --bce_weight 1.0 --iou_weight 0.75
 ```
+
+To ignore an existing checkpoint and start over, add `--no_resume`.
 
 Checkpoints are saved in:
 
 ```text
 checkpoints/best_model.pth
-checkpoints/best_model_<model_type>.pth
-checkpoints/latest_<model_type>.pth
+checkpoints/best_model_<experiment_name_or_model_type>.pth
+checkpoints/latest_<experiment_name_or_model_type>.pth
 checkpoints/latest_checkpoint.pth
 ```
 
 Training history is saved after every epoch in:
 
 ```text
-outputs/metrics/training_history_<model_type>.json
-outputs/metrics/training_history_<model_type>.csv
+outputs/metrics/training_history_<experiment_name_or_model_type>.json
+outputs/metrics/training_history_<experiment_name_or_model_type>.csv
 ```
 
-Each checkpoint stores `model_state_dict`, `optimizer_state_dict`, `current_epoch`, `best_val_loss`, the full `history` dictionary, model metadata, and the current early-stopping counter. Resuming with `--resume` loads this state and continues at `current_epoch + 1`.
+Each checkpoint stores `model_state_dict`, `optimizer_state_dict`, `current_epoch`, `best_val_loss`, the full `history` dictionary, model metadata, the training configuration, and the current early-stopping counter. Automatic resume loads this state and continues at `current_epoch + 1`.
 
 ## Evaluation
 
 Evaluate the best checkpoint on the preprocessed test split:
 
 ```bash
-python evaluate.py --data_dir pre-processed --image_size 128 --model_type unet_small
+python evaluate.py --data_dir pre-processed --image_size 128 --model_type baseline --checkpoint checkpoints/best_model_baseline.pth --experiment_name baseline
+python evaluate.py --data_dir pre-processed --image_size 128 --model_type unet_small --checkpoint checkpoints/best_model_improved.pth --experiment_name improved
 ```
+
+If you have not retrained with `--experiment_name improved` yet, evaluate the existing UNet checkpoint with `--checkpoint checkpoints/best_model_unet_small.pth --experiment_name improved`.
 
 Metrics are printed to the terminal and saved to:
 
 ```text
 outputs/metrics/test_metrics.json
+outputs/metrics/test_metrics_<experiment_name>.json
 ```
 
 ## Training Curves
@@ -234,8 +248,11 @@ outputs/metrics/test_metrics.json
 Plot saved loss and metric history:
 
 ```bash
-python plot_training_history.py --model_type unet_small
+python plot_training_history.py --experiment_name baseline
+python plot_training_history.py --experiment_name improved
 ```
+
+If you are using the existing UNet checkpoint, plot its saved history with `python plot_training_history.py --history outputs/metrics/training_history_unet_small.json --prefix improved`.
 
 Plots are saved to:
 
@@ -248,14 +265,46 @@ outputs/metrics/plots/
 Create qualitative prediction examples with the input image, ground-truth mask, predicted mask, and overlay:
 
 ```bash
-python visualize.py --data_dir pre-processed --image_size 128 --model_type unet_small --num_samples 10
+python visualize.py --data_dir pre-processed --image_size 128 --model_type baseline --checkpoint checkpoints/best_model_baseline.pth --experiment_name baseline --num_samples 10
+python visualize.py --data_dir pre-processed --image_size 128 --model_type unet_small --checkpoint checkpoints/best_model_improved.pth --experiment_name improved --num_samples 10
+```
+
+If you are using the existing UNet checkpoint, replace `checkpoints/best_model_improved.pth` with `checkpoints/best_model_unet_small.pth`.
+
+Give custom experiments their own folder with `--experiment_name`:
+
+```bash
+python visualize.py --data_dir pre-processed --image_size 128 --model_type baseline --checkpoint checkpoints/best_model_baseline.pth --experiment_name baseline
 ```
 
 Visualizations are saved to:
 
 ```text
-outputs/visualizations/
+outputs/visualizations/<experiment_name>/
 ```
+
+## Baseline vs Improved Comparison
+
+Build the final results table and visual comparison after evaluating both runs:
+
+```bash
+python compare_experiments.py --baseline_name baseline --improved_name improved
+```
+
+The comparison report is saved to:
+
+```text
+outputs/metrics/experiment_comparison.md
+outputs/metrics/plots/baseline_vs_improved_metrics.png
+outputs/visualizations/baseline_vs_improved_contact_sheet.png
+```
+
+Current saved test comparison:
+
+| Experiment | IoU | Precision | Recall | F1-score | MAE | MSE |
+|---|---:|---:|---:|---:|---:|---:|
+| Baseline | 0.5805 | 0.7262 | 0.7431 | 0.7346 | 0.1555 | 0.0879 |
+| Improved | 0.7349 | 0.8625 | 0.8324 | 0.8472 | 0.0920 | 0.0508 |
 
 ## Streamlit Demo
 
@@ -283,6 +332,10 @@ The baseline model is a simple scratch-built encoder-decoder CNN:
 - four ConvTranspose decoder stages;
 - one-channel sigmoid saliency output with the same spatial size as the input.
 
+### `baseline_no_bn`
+
+The `baseline_no_bn` model keeps the same baseline encoder-decoder layout but removes every BatchNorm layer. Use it only for the BatchNorm ablation in Experiment 2.
+
 ### `unet_small`
 
 The `unet_small` model is a compact UNet-style architecture implemented from scratch:
@@ -290,7 +343,7 @@ The `unet_small` model is a compact UNet-style architecture implemented from scr
 - custom ConvBlocks with two convolution layers per block;
 - BatchNorm and ReLU activations;
 - encoder-to-decoder skip connections;
-- bottleneck stage with optional dropout in deeper layers;
+- bottleneck and decoder stages with configurable dropout in deeper layers;
 - one-channel sigmoid saliency output.
 
 ## Metrics
@@ -311,17 +364,15 @@ The project writes generated artifacts to:
 ```text
 checkpoints/                 # model checkpoints
 outputs/metrics/             # metrics, histories, and plots
-outputs/visualizations/      # qualitative prediction images
+outputs/visualizations/      # qualitative prediction images grouped by experiment
 pre-processed/               # processed train/val/test data
 ```
 
 ## Future Improvements
 
-- Add configurable image sizes and experiment presets for faster comparison.
-- Add richer augmentation policies for saliency-specific robustness.
+- Add experiment presets for faster comparison.
 - Add additional scratch-built architectures for model comparison.
 - Add automated tests for data loading, metric computation, and checkpoint resume behavior.
-- Add clearer experiment reports that compare model variants using saved metrics and visual outputs.
 - Add a finalized open-source license file before publishing.
 
 ## Conclusion

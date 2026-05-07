@@ -1,0 +1,57 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# OS and editor files
+.DS_Store
+.vscode/
+.idea/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Dataset files
+data/*
+!data/.gitkeep
+
+# Preprocessed samples and tensors
+pre-processed/*
+!pre-processed/.gitkeep
+
+# Model checkpoints and PyTorch artifacts
+checkpoints/*
+!checkpoints/.gitkeep
+*.pth
+*.pt
+*.ckpt
+
+# Generated outputs
+outputs/*
+!outputs/.gitkeep
+!outputs/metrics/
+outputs/metrics/*
+!outputs/metrics/.gitkeep
+!outputs/visualizations/
+outputs/visualizations/*
+!outputs/visualizations/.gitkeep
+outputs/.matplotlib-cache/
+
+# Logs and temporary files
+*.log
+tmp/
+temp/

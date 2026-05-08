@@ -1,4 +1,5 @@
 import json
+from functools import partial
 from pathlib import Path
 import random
 from typing import Dict, List, Tuple
@@ -38,6 +39,13 @@ AUGMENTATION_STRENGTHS = {
         "scale_range": (1.0, 1.4),
     },
 }
+
+
+def seed_worker(worker_id: int, base_seed: int) -> None:
+    worker_seed = base_seed + worker_id
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
 
 
 def validate_augmentation_strength(value: str) -> str:
@@ -477,12 +485,19 @@ def create_dataloaders(
         augmentation_strength=augmentation_strength,
     )
 
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+
+    worker_init_fn = partial(seed_worker, base_seed=seed)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
+        worker_init_fn=worker_init_fn,
+        generator=generator,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -490,6 +505,7 @@ def create_dataloaders(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
+        worker_init_fn=worker_init_fn,
     )
     test_loader = DataLoader(
         test_dataset,
@@ -497,6 +513,7 @@ def create_dataloaders(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
+        worker_init_fn=worker_init_fn,
     )
 
     return train_loader, val_loader, test_loader

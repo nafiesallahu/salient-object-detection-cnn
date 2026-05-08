@@ -20,11 +20,21 @@ from PIL import Image, ImageDraw
 
 METRIC_NAMES = ("iou", "precision", "recall", "f1_score", "mae", "mse")
 PLOT_METRICS = ("iou", "f1_score", "mae")
+DEFAULT_EXPERIMENTS = (
+    "baseline",
+    "baseline_no_bn",
+    "strong_aug",
+    "iou_heavy",
+    "improved",
+)
 RESAMPLE_LANCZOS = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
 DEFAULT_DESCRIPTIONS = {
     "baseline": "Baseline encoder-decoder CNN, light augmentation, BCE + 0.5 IoU loss.",
+    "baseline_no_bn": "Baseline encoder-decoder with BatchNorm removed.",
+    "strong_aug": "Baseline encoder-decoder with stronger train-time augmentation.",
+    "iou_heavy": "Baseline encoder-decoder with IoU loss weight increased to 1.0.",
     "improved": (
-        "Small UNet with deeper convolution blocks, skip connections, and dropout."
+        "Small UNet with skip connections, dropout, strong augmentation, lower LR, and heavier IoU loss."
     ),
 }
 
@@ -44,22 +54,31 @@ def safe_experiment_name(value: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Create a baseline-vs-improved metrics table and visual comparison."
+        description="Create metrics tables and visual comparisons for SOD experiments."
     )
     parser.add_argument("--baseline_name", type=str, default="baseline")
     parser.add_argument("--improved_name", type=str, default="improved")
+    parser.add_argument(
+        "--experiment_names",
+        nargs="+",
+        default=None,
+        help=(
+            "Experiment names to compare. Defaults to baseline, baseline_no_bn, "
+            "strong_aug, iou_heavy, and improved."
+        ),
+    )
     parser.add_argument("--metrics_dir", type=str, default="outputs/metrics")
     parser.add_argument("--visualizations_dir", type=str, default="outputs/visualizations")
     parser.add_argument("--output_markdown", type=str, default="outputs/metrics/experiment_comparison.md")
     parser.add_argument(
         "--output_plot",
         type=str,
-        default="outputs/metrics/plots/baseline_vs_improved_metrics.png",
+        default="outputs/metrics/plots/experiment_metrics_comparison.png",
     )
     parser.add_argument(
         "--output_visual",
         type=str,
-        default="outputs/visualizations/baseline_vs_improved_contact_sheet.png",
+        default="outputs/visualizations/experiment_comparison_contact_sheet.png",
     )
     return parser.parse_args()
 
@@ -80,6 +99,19 @@ def format_metric(metrics: Mapping[str, float] | None, key: str) -> str:
     return f"{metrics[key]:.4f}"
 
 
+def format_delta(
+    metrics: Mapping[str, float] | None,
+    baseline_metrics: Mapping[str, float] | None,
+    key: str,
+) -> str:
+    if metrics is None or baseline_metrics is None:
+        return "missing"
+    if key not in metrics or key not in baseline_metrics:
+        return "missing"
+    delta = metrics[key] - baseline_metrics[key]
+    return f"{delta:+.4f}"
+
+
 def relative_link(path: Path | None, project_dir: Path) -> str:
     if path is None:
         return "missing"
@@ -88,6 +120,16 @@ def relative_link(path: Path | None, project_dir: Path) -> str:
     except ValueError:
         display_path = path
     return f"[{display_path}]({display_path})"
+
+
+def relative_image(path: Path | None, project_dir: Path, alt_text: str) -> str:
+    if path is None:
+        return "missing"
+    try:
+        display_path = path.resolve().relative_to(project_dir)
+    except ValueError:
+        display_path = path
+    return f"![{alt_text}]({display_path})"
 
 
 def find_first_visual(visualizations_dir: Path, experiment_name: str) -> Path | None:
@@ -106,38 +148,80 @@ def write_markdown_table(
     plot_path: Path | None,
     visual_path: Path | None,
 ) -> None:
+    baseline_metrics = rows[0]["metrics"] if rows else None
     lines = [
-        "# Baseline vs Improved Results",
+        "# Experiment Comparison Results",
         "",
-        "| Experiment | Configuration | IoU | Precision | Recall | F1-score | MAE | MSE | Visual example |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---|",
+        "Current saved metrics use the project custom split and threshold `0.5`. "
+        "Positive deltas are better for IoU, precision, recall, and F1-score; "
+        "negative deltas are better for MAE and MSE.",
+        "",
+        "| Experiment | Configuration | IoU | Δ IoU | Precision | Recall | F1-score | Δ F1 | MAE | Δ MAE | MSE | Δ MSE | Visual example |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
 
     for row in rows:
         metrics = row["metrics"]
         visual = row["visual"]
         lines.append(
-            "| {name} | {description} | {iou} | {precision} | {recall} | "
-            "{f1_score} | {mae} | {mse} | {visual_link} |".format(
+            "| {name} | {description} | {iou} | {delta_iou} | {precision} | {recall} | "
+            "{f1_score} | {delta_f1} | {mae} | {delta_mae} | {mse} | {delta_mse} | "
+            "{visual_link} |".format(
                 name=row["name"],
                 description=row["description"],
                 iou=format_metric(metrics, "iou"),
+                delta_iou=format_delta(metrics, baseline_metrics, "iou"),
                 precision=format_metric(metrics, "precision"),
                 recall=format_metric(metrics, "recall"),
                 f1_score=format_metric(metrics, "f1_score"),
+                delta_f1=format_delta(metrics, baseline_metrics, "f1_score"),
                 mae=format_metric(metrics, "mae"),
+                delta_mae=format_delta(metrics, baseline_metrics, "mae"),
                 mse=format_metric(metrics, "mse"),
+                delta_mse=format_delta(metrics, baseline_metrics, "mse"),
                 visual_link=relative_link(visual, project_dir),
             )
         )
 
     lines.extend(["", "## Visual Outputs", ""])
     if plot_path is not None:
-        lines.append(f"- Metric comparison chart: {relative_link(plot_path, project_dir)}")
+        lines.append("### Metric Comparison Chart")
+        lines.append("")
+        lines.append(relative_image(plot_path, project_dir, "Metric comparison chart"))
+        lines.append("")
     if visual_path is not None:
-        lines.append(f"- Qualitative contact sheet: {relative_link(visual_path, project_dir)}")
+        lines.append("### Qualitative Contact Sheet")
+        lines.append("")
+        lines.append(relative_image(visual_path, project_dir, "Qualitative contact sheet"))
+        lines.append("")
     if plot_path is None and visual_path is None:
         lines.append("- No comparison visuals were generated because the required inputs are missing.")
+
+    lines.extend(["", "## Per-Experiment Visual Examples", ""])
+    for row in rows:
+        visual = row["visual"]
+        if visual is None:
+            lines.append(f"### {row['name']}")
+            lines.append("")
+            lines.append("No visual example found for this experiment.")
+            lines.append("")
+            continue
+        lines.append(f"### {row['name']}")
+        lines.append("")
+        lines.append(relative_image(visual, project_dir, f"{row['name']} visual example"))
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Interpretation",
+            "",
+            "- `baseline_no_bn` is worse than the baseline, showing BatchNorm is helpful for the scratch encoder-decoder.",
+            "- `strong_aug` improves recall but reduces precision, so it predicts larger salient regions and creates more false positives.",
+            "- `iou_heavy` does not improve the baseline, suggesting the plain architecture is the main bottleneck.",
+            "- `improved` is the strongest run, with much better IoU/F1 and substantially lower MAE/MSE.",
+            "",
+        ]
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -157,17 +241,18 @@ def plot_metric_comparison(
 
     names = list(available)
     x_positions = list(range(len(PLOT_METRICS)))
-    bar_width = 0.35
+    bar_width = min(0.16, 0.8 / max(len(names), 1))
 
-    fig, axis = plt.subplots(figsize=(8, 4.5))
+    fig, axis = plt.subplots(figsize=(10, 5.5))
     for offset, name in enumerate(names):
         values = [available[name][metric] for metric in PLOT_METRICS]
-        positions = [x + (offset - 0.5) * bar_width for x in x_positions]
+        center_offset = offset - (len(names) - 1) / 2
+        positions = [x + center_offset * bar_width for x in x_positions]
         axis.bar(positions, values, width=bar_width, label=name)
 
     axis.set_xticks(x_positions)
     axis.set_xticklabels(["IoU", "F1-score", "MAE"])
-    axis.set_title("Baseline vs Improved Test Metrics")
+    axis.set_title("Experiment Test Metrics")
     axis.grid(axis="y", alpha=0.3)
     axis.legend()
     fig.tight_layout()
@@ -227,9 +312,13 @@ def main() -> None:
     output_plot = resolve_path(args.output_plot, project_dir)
     output_visual = resolve_path(args.output_visual, project_dir)
 
-    baseline_name = safe_experiment_name(args.baseline_name)
-    improved_name = safe_experiment_name(args.improved_name)
-    names = [baseline_name, improved_name]
+    if args.experiment_names:
+        names = [safe_experiment_name(name) for name in args.experiment_names]
+    else:
+        default_names = list(DEFAULT_EXPERIMENTS)
+        default_names[0] = safe_experiment_name(args.baseline_name)
+        default_names[-1] = safe_experiment_name(args.improved_name)
+        names = default_names
 
     metrics_by_name = {
         name: load_metrics(metrics_dir, name)

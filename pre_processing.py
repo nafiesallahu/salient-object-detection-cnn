@@ -59,26 +59,29 @@ def find_pairs(image_dir: Path, mask_dir: Path) -> List[Tuple[Path, Path]]:
     return pairs
 
 
+def get_duts_subset_dirs(raw_data_dir: Path, subset: str) -> Tuple[Path, Path]:
+    if subset not in {"DUTS-TR", "DUTS-TE"}:
+        raise ValueError("subset must be one of: DUTS-TR, DUTS-TE")
+    subset_suffix = "TR" if subset == "DUTS-TR" else "TE"
+    return (
+        raw_data_dir / subset / f"DUTS-{subset_suffix}-Image",
+        raw_data_dir / subset / f"DUTS-{subset_suffix}-Mask",
+    )
+
+
+def collect_duts_pairs(raw_data_dir: Path, subset: str) -> List[Tuple[Path, Path]]:
+    image_dir, mask_dir = get_duts_subset_dirs(raw_data_dir, subset)
+    for folder in [image_dir, mask_dir]:
+        if not folder.exists():
+            raise FileNotFoundError(f"Required DUTS folder not found: {folder}")
+    return find_pairs(image_dir, mask_dir)
+
+
 def collect_all_duts_pairs(raw_data_dir: Path) -> List[Tuple[Path, Path]]:
-    subsets = [
-        (
-            raw_data_dir / "DUTS-TR" / "DUTS-TR-Image",
-            raw_data_dir / "DUTS-TR" / "DUTS-TR-Mask",
-        ),
-        (
-            raw_data_dir / "DUTS-TE" / "DUTS-TE-Image",
-            raw_data_dir / "DUTS-TE" / "DUTS-TE-Mask",
-        ),
-    ]
-
-    all_pairs: List[Tuple[Path, Path]] = []
-    for image_dir, mask_dir in subsets:
-        for folder in [image_dir, mask_dir]:
-            if not folder.exists():
-                raise FileNotFoundError(f"Required DUTS folder not found: {folder}")
-        all_pairs.extend(find_pairs(image_dir, mask_dir))
-
-    return all_pairs
+    return (
+        collect_duts_pairs(raw_data_dir, "DUTS-TR")
+        + collect_duts_pairs(raw_data_dir, "DUTS-TE")
+    )
 
 
 def split_train_val_test(
@@ -108,6 +111,48 @@ def split_train_val_test(
     test_pairs = shuffled[train_count + val_count:]
 
     return train_pairs, val_pairs, test_pairs
+
+
+def split_train_val(
+    pairs: List[Tuple[Path, Path]],
+    val_split: float,
+    seed: int,
+) -> Tuple[List[Tuple[Path, Path]], List[Tuple[Path, Path]]]:
+    if val_split <= 0 or val_split >= 1:
+        raise ValueError("val_split must be greater than 0 and less than 1.")
+
+    shuffled = pairs[:]
+    rng = random.Random(seed)
+    rng.shuffle(shuffled)
+
+    val_count = round(len(shuffled) * val_split)
+    train_count = len(shuffled) - val_count
+    return shuffled[:train_count], shuffled[train_count:]
+
+
+def build_splits(
+    raw_data_dir: Path,
+    split_strategy: str,
+    train_split: float,
+    val_split: float,
+    test_split: float,
+    seed: int,
+) -> Tuple[List[Tuple[Path, Path]], List[Tuple[Path, Path]], List[Tuple[Path, Path]], int]:
+    if split_strategy == "official":
+        train_val_pairs = collect_duts_pairs(raw_data_dir, "DUTS-TR")
+        test_pairs = collect_duts_pairs(raw_data_dir, "DUTS-TE")
+        train_pairs, val_pairs = split_train_val(train_val_pairs, val_split, seed)
+        return train_pairs, val_pairs, test_pairs, len(train_val_pairs) + len(test_pairs)
+
+    all_pairs = collect_all_duts_pairs(raw_data_dir)
+    train_pairs, val_pairs, test_pairs = split_train_val_test(
+        all_pairs,
+        train_split,
+        val_split,
+        test_split,
+        seed,
+    )
+    return train_pairs, val_pairs, test_pairs, len(all_pairs)
 
 
 def preprocess_pair(
@@ -223,6 +268,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train_split", type=float, default=0.70, help="Training split ratio.")
     parser.add_argument("--val_split", type=float, default=0.15, help="Validation split ratio.")
     parser.add_argument("--test_split", type=float, default=0.15, help="Test split ratio.")
+    parser.add_argument(
+        "--split_strategy",
+        type=str,
+        default="official",
+        choices=["official", "custom"],
+        help=(
+            "official keeps DUTS-TE as the held-out test set and splits DUTS-TR "
+            "into train/val; custom reshuffles DUTS-TR and DUTS-TE together."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42, help="Seed for train/val/test split.")
     return parser.parse_args()
 
@@ -240,24 +295,31 @@ def main() -> None:
     print(f"Output: {output_dir}")
     print(f"Image size: {args.image_size}x{args.image_size}")
     print(f"Output format: {args.output_format}")
-    print(
-        "Split ratios: "
-        f"train={args.train_split:.2f}, "
-        f"val={args.val_split:.2f}, "
-        f"test={args.test_split:.2f}"
-    )
+    print(f"Split strategy: {args.split_strategy}")
+    if args.split_strategy == "official":
+        print(
+            "Split policy: DUTS-TR train/validation split, DUTS-TE held out for test "
+            f"(validation ratio={args.val_split:.2f})"
+        )
+    else:
+        print(
+            "Split ratios: "
+            f"train={args.train_split:.2f}, "
+            f"val={args.val_split:.2f}, "
+            f"test={args.test_split:.2f}"
+        )
     print("=" * 70)
 
-    all_pairs = collect_all_duts_pairs(raw_data_dir)
-    train_pairs, val_pairs, test_pairs = split_train_val_test(
-        all_pairs,
+    train_pairs, val_pairs, test_pairs, total_pair_count = build_splits(
+        raw_data_dir,
+        args.split_strategy,
         args.train_split,
         args.val_split,
         args.test_split,
         args.seed,
     )
 
-    print(f"Total paired samples: {len(all_pairs)}")
+    print(f"Total paired samples: {total_pair_count}")
     print(f"Train samples: {len(train_pairs)}")
     print(f"Validation samples: {len(val_pairs)}")
     print(f"Test samples: {len(test_pairs)}")
@@ -269,6 +331,7 @@ def main() -> None:
         "raw_data_dir": str(raw_data_dir),
         "image_size": args.image_size,
         "output_format": args.output_format,
+        "split_strategy": args.split_strategy,
         "train_split": args.train_split,
         "val_split": args.val_split,
         "test_split": args.test_split,

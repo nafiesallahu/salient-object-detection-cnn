@@ -262,6 +262,14 @@ def parse_args() -> argparse.Namespace:
         default=5,
         help="Stop after this many epochs without validation improvement.",
     )
+    parser.add_argument(
+        "--write_global_aliases",
+        action="store_true",
+        help=(
+            "Also update checkpoints/best_model.pth and latest_checkpoint.pth. "
+            "Disabled by default so ablations do not overwrite the demo/default model."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     return parser.parse_args()
 
@@ -305,6 +313,7 @@ def main() -> None:
     print(f"Learning rate: {args.lr}")
     print(f"Augmentation strength: {args.augmentation_strength}")
     print(f"Loss: {args.bce_weight:g} * BCE + {args.iou_weight:g} * IoU loss")
+    print(f"Update global checkpoint aliases: {args.write_global_aliases}")
     print("=" * 70)
 
     train_loader, val_loader, _ = create_dataloaders(
@@ -333,11 +342,12 @@ def main() -> None:
         "batch_size": args.batch_size,
         "image_size": args.image_size,
         "seed": args.seed,
+        "write_global_aliases": args.write_global_aliases,
     }
 
     latest_path = checkpoints_dir / f"latest_{run_name}.pth"
     latest_alias_path = checkpoints_dir / "latest_checkpoint.pth"
-    best_path = checkpoints_dir / "best_model.pth"
+    best_alias_path = checkpoints_dir / "best_model.pth"
     best_run_path = checkpoints_dir / f"best_model_{run_name}.pth"
     history_json_path = metrics_dir / f"training_history_{run_name}.json"
     history_csv_path = metrics_dir / f"training_history_{run_name}.csv"
@@ -418,7 +428,7 @@ def main() -> None:
             best_val_loss = val_loss
             epochs_without_improvement = 0
             save_checkpoint(
-                best_path,
+                best_run_path,
                 model,
                 optimizer,
                 epoch,
@@ -429,9 +439,10 @@ def main() -> None:
                 epochs_without_improvement,
                 training_config,
             )
-            shutil.copyfile(best_path, best_run_path)
-            print(f"Best model saved to: {best_path}")
             print(f"Experiment best model saved to: {best_run_path}")
+            if args.write_global_aliases:
+                shutil.copyfile(best_run_path, best_alias_path)
+                print(f"Global best alias updated: {best_alias_path}")
         else:
             epochs_without_improvement += 1
             print(
@@ -451,8 +462,10 @@ def main() -> None:
             epochs_without_improvement,
             training_config,
         )
-        shutil.copyfile(latest_path, latest_alias_path)
         print(f"Latest checkpoint saved to: {latest_path}")
+        if args.write_global_aliases:
+            shutil.copyfile(latest_path, latest_alias_path)
+            print(f"Global latest alias updated: {latest_alias_path}")
 
         if epochs_without_improvement >= args.early_stopping_patience:
             print("Early stopping triggered.")

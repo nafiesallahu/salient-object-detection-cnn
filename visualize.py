@@ -49,6 +49,40 @@ def infer_experiment_name(model_type: str, checkpoint_path: Path) -> str:
     return safe_folder_name(checkpoint_stem)
 
 
+def resolve_checkpoint_path(
+    checkpoint_value: str | None,
+    model_type: str | None,
+    experiment_name: str | None,
+    project_dir: Path,
+) -> Path:
+    if checkpoint_value:
+        checkpoint_path = resolve_path(checkpoint_value, project_dir)
+        if checkpoint_path.exists():
+            return checkpoint_path
+        raise FileNotFoundError(f"No checkpoint found at {checkpoint_path}.")
+
+    candidates = []
+    if experiment_name:
+        candidates.append(
+            project_dir / "checkpoints" / f"best_model_{safe_folder_name(experiment_name)}.pth"
+        )
+    if model_type:
+        candidates.append(project_dir / "checkpoints" / f"best_model_{model_type}.pth")
+    candidates.extend(
+        [
+            project_dir / "checkpoints" / "best_model_improved.pth",
+            project_dir / "checkpoints" / "best_model.pth",
+        ]
+    )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    candidates_text = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"No checkpoint found. Tried: {candidates_text}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Save saliency visualization examples.")
     parser.add_argument(
@@ -61,15 +95,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model_type",
         type=str,
-        default="baseline",
+        default=None,
         choices=list(MODEL_TYPES),
-        help="Model architecture used by the checkpoint.",
+        help="Model architecture used by the checkpoint. Defaults to checkpoint metadata.",
     )
     parser.add_argument(
         "--checkpoint",
         type=str,
-        default="checkpoints/best_model.pth",
-        help="Path to best model checkpoint.",
+        default=None,
+        help=(
+            "Path to model checkpoint. Defaults to best_model_<experiment_name>.pth, "
+            "best_model_<model_type>.pth, then the improved/best aliases."
+        ),
     )
     parser.add_argument("--num_samples", type=int, default=10, help="Number of examples to save.")
     parser.add_argument(
@@ -107,21 +144,17 @@ def main() -> None:
     args = parse_args()
     project_dir = Path(__file__).resolve().parent
     data_dir = resolve_path(args.data_dir, project_dir)
-    checkpoint_path = resolve_path(args.checkpoint, project_dir)
-
-    if not checkpoint_path.exists():
-        typed_checkpoint = project_dir / "checkpoints" / f"best_model_{args.model_type}.pth"
-        if typed_checkpoint.exists():
-            checkpoint_path = typed_checkpoint
-        else:
-            raise FileNotFoundError(
-                f"No checkpoint found at {checkpoint_path} or {typed_checkpoint}."
-            )
+    checkpoint_path = resolve_checkpoint_path(
+        args.checkpoint,
+        args.model_type,
+        args.experiment_name,
+        project_dir,
+    )
 
     experiment_name = (
         safe_folder_name(args.experiment_name)
         if args.experiment_name
-        else infer_experiment_name(args.model_type, checkpoint_path)
+        else infer_experiment_name(args.model_type or "model", checkpoint_path)
     )
     output_base_dir = resolve_path(args.output_dir, project_dir)
     output_dir = output_base_dir / experiment_name
@@ -133,6 +166,7 @@ def main() -> None:
     print(f"Data directory: {data_dir}")
     print(f"Data mode: {'raw DUTS' if args.use_raw_data else 'preprocessed tensors'}")
     print(f"Checkpoint: {checkpoint_path}")
+    print(f"Requested model type: {args.model_type or 'from checkpoint metadata'}")
     print(f"Experiment: {experiment_name}")
     print(f"Saving to: {output_dir}")
     print("=" * 70)
@@ -146,8 +180,17 @@ def main() -> None:
     )
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
 
-    model = get_model(args.model_type).to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint_model_type = checkpoint.get("model_type")
+    model_type = args.model_type or checkpoint_model_type or "baseline"
+    if checkpoint_model_type and checkpoint_model_type != model_type:
+        print(
+            "Warning: checkpoint was trained with "
+            f"model_type='{checkpoint_model_type}', but current model_type is "
+            f"'{model_type}'."
+        )
+    print(f"Effective model type: {model_type}")
+    model = get_model(model_type).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 

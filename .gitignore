@@ -46,9 +46,19 @@ outputs/*
 !outputs/metrics/
 outputs/metrics/*
 !outputs/metrics/.gitkeep
+!outputs/metrics/*.csv
+!outputs/metrics/*.json
+!outputs/metrics/*.md
+!outputs/metrics/plots/
+outputs/metrics/plots/*
+!outputs/metrics/plots/*.png
 !outputs/visualizations/
 outputs/visualizations/*
 !outputs/visualizations/.gitkeep
+!outputs/visualizations/*contact_sheet.png
+!outputs/visualizations/*/
+outputs/visualizations/*/*
+!outputs/visualizations/*/*.png
 outputs/.matplotlib-cache/
 
 # Logs and temporary files

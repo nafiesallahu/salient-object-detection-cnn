@@ -11,7 +11,18 @@ from sod_model import MODEL_TYPES, get_model
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-CHECKPOINT_PATH = PROJECT_DIR / "checkpoints" / "best_model.pth"
+CHECKPOINT_CANDIDATES = [
+    PROJECT_DIR / "checkpoints" / "best_model_improved.pth",
+    PROJECT_DIR / "checkpoints" / "best_model_unet_small.pth",
+    PROJECT_DIR / "checkpoints" / "best_model.pth",
+]
+
+
+def get_default_checkpoint_path() -> Path:
+    for path in CHECKPOINT_CANDIDATES:
+        if path.exists():
+            return path
+    return CHECKPOINT_CANDIDATES[0]
 
 
 def preprocess_image(image: Image.Image, image_size: int) -> torch.Tensor:
@@ -51,7 +62,13 @@ def main() -> None:
     st.title("Salient Object Detection")
 
     image_size = st.sidebar.number_input("Image size", min_value=64, max_value=512, value=128, step=32)
-    fallback_model_type = st.sidebar.selectbox("Fallback model type", list(MODEL_TYPES))
+    fallback_model_type = st.sidebar.selectbox(
+        "Fallback model type",
+        list(MODEL_TYPES),
+        index=list(MODEL_TYPES).index("unet_small"),
+    )
+    checkpoint_path = get_default_checkpoint_path()
+    st.sidebar.caption(f"Checkpoint: {checkpoint_path.name}")
 
     uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png", "bmp", "webp"])
 
@@ -60,7 +77,7 @@ def main() -> None:
         return
 
     try:
-        model, model_type, device = load_model(str(CHECKPOINT_PATH), fallback_model_type)
+        model, model_type, device = load_model(str(checkpoint_path), fallback_model_type)
     except FileNotFoundError as error:
         st.error(str(error))
         st.stop()

@@ -164,16 +164,17 @@ def main() -> None:
     inference_time = time.perf_counter() - start_time
 
     predicted_mask = prediction[0, 0].detach().cpu().numpy()
+    display_image = image.convert("RGB").resize(predicted_mask.shape[::-1], Image.BILINEAR)
     overlay = make_overlay(image, predicted_mask)
 
     st.caption(
         f"Checkpoint: {checkpoint_path.name} | Model: {model_type} | "
-        f"Device: {device} | Inference time: {inference_time:.4f}s"
+        f"Inference time: {inference_time:.4f}s"
     )
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.image(image, caption="Original image", use_container_width=True)
+        st.image(display_image, caption="Original image", use_container_width=True)
     with col2:
         st.image(predicted_mask, caption="Predicted saliency mask", clamp=True, use_container_width=True)
     with col3:

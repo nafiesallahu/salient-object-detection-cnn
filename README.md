@@ -350,7 +350,7 @@ The app allows you to upload an image and inspect:
 - the saliency overlay;
 - inference time.
 
-The app first looks for `checkpoints/best_model_improved.pth`, then `checkpoints/best_model_unet_small.pth`, and finally `checkpoints/best_model.pth`. This avoids accidentally serving a weaker ablation checkpoint when multiple runs exist locally.
+When run-specific checkpoints are available, the sidebar lets you choose the experiment checkpoint to use, including baseline, BatchNorm ablation, strong augmentation, IoU-heavy loss, and improved runs. The app defaults to the improved checkpoint and falls back to `checkpoints/best_model.pth` only when no run-specific best checkpoint exists.
 
 ## Models
 

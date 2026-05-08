@@ -7,22 +7,87 @@ import streamlit as st
 import torch
 
 from device_utils import get_available_device
-from sod_model import MODEL_TYPES, get_model
+from sod_model import get_model
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-CHECKPOINT_CANDIDATES = [
-    PROJECT_DIR / "checkpoints" / "best_model_improved.pth",
-    PROJECT_DIR / "checkpoints" / "best_model_unet_small.pth",
-    PROJECT_DIR / "checkpoints" / "best_model.pth",
-]
+CHECKPOINTS_DIR = PROJECT_DIR / "checkpoints"
+PREFERRED_CHECKPOINT_STEMS = (
+    "best_model_improved",
+    "best_model_baseline",
+    "best_model_baseline_no_bn",
+    "best_model_strong_aug",
+    "best_model_iou_heavy",
+)
+EXPERIMENT_LABELS = {
+    "improved": "Improved",
+    "baseline": "Baseline",
+    "baseline_no_bn": "Baseline no BatchNorm",
+    "strong_aug": "Strong augmentation",
+    "iou_heavy": "IoU-heavy loss",
+    "best_model": "Best model alias",
+}
+EXPERIMENT_MODEL_TYPES = {
+    "improved": "unet_small",
+    "baseline": "baseline",
+    "baseline_no_bn": "baseline_no_bn",
+    "strong_aug": "baseline",
+    "iou_heavy": "baseline",
+}
+NON_EXPERIMENT_CHECKPOINTS = {"unet_small"}
+
+
+def get_experiment_name(checkpoint_path: Path) -> str:
+    stem = checkpoint_path.stem
+    if stem.startswith("best_model_"):
+        return stem.removeprefix("best_model_")
+    if stem == "best_model":
+        return "best_model"
+    return stem
+
+
+def format_checkpoint_label(checkpoint_path: Path) -> str:
+    experiment_name = get_experiment_name(checkpoint_path)
+    return EXPERIMENT_LABELS.get(
+        experiment_name,
+        experiment_name.replace("_", " ").title(),
+    )
+
+
+def infer_model_type_from_checkpoint(checkpoint_path: Path) -> str:
+    experiment_name = get_experiment_name(checkpoint_path)
+    return EXPERIMENT_MODEL_TYPES.get(experiment_name, "unet_small")
+
+
+def get_available_checkpoints(checkpoints_dir: Path = CHECKPOINTS_DIR) -> list[Path]:
+    checkpoints: list[Path] = []
+    seen: set[Path] = set()
+
+    for stem in PREFERRED_CHECKPOINT_STEMS:
+        path = checkpoints_dir / f"{stem}.pth"
+        if path.exists():
+            checkpoints.append(path)
+            seen.add(path)
+
+    if checkpoints_dir.exists():
+        for path in sorted(checkpoints_dir.glob("best_model_*.pth")):
+            experiment_name = get_experiment_name(path)
+            if experiment_name not in NON_EXPERIMENT_CHECKPOINTS and path not in seen:
+                checkpoints.append(path)
+                seen.add(path)
+
+        alias_path = checkpoints_dir / "best_model.pth"
+        if not checkpoints and alias_path.exists():
+            checkpoints.append(alias_path)
+
+    return checkpoints
 
 
 def get_default_checkpoint_path() -> Path:
-    for path in CHECKPOINT_CANDIDATES:
-        if path.exists():
-            return path
-    return CHECKPOINT_CANDIDATES[0]
+    checkpoints = get_available_checkpoints()
+    if checkpoints:
+        return checkpoints[0]
+    return CHECKPOINTS_DIR / "best_model_improved.pth"
 
 
 def preprocess_image(image: Image.Image, image_size: int) -> torch.Tensor:
@@ -42,14 +107,14 @@ def make_overlay(image: Image.Image, mask: np.ndarray) -> np.ndarray:
 
 
 @st.cache_resource
-def load_model(checkpoint_path: str, fallback_model_type: str):
+def load_model(checkpoint_path: str):
     path = Path(checkpoint_path)
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
 
     device = get_available_device()
     checkpoint = torch.load(path, map_location=device)
-    model_type = checkpoint.get("model_type", fallback_model_type)
+    model_type = checkpoint.get("model_type", infer_model_type_from_checkpoint(path))
 
     model = get_model(model_type).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -62,13 +127,21 @@ def main() -> None:
     st.title("Salient Object Detection")
 
     image_size = st.sidebar.number_input("Image size", min_value=64, max_value=512, value=128, step=32)
-    fallback_model_type = st.sidebar.selectbox(
-        "Fallback model type",
-        list(MODEL_TYPES),
-        index=list(MODEL_TYPES).index("unet_small"),
-    )
-    checkpoint_path = get_default_checkpoint_path()
-    st.sidebar.caption(f"Checkpoint: {checkpoint_path.name}")
+    available_checkpoints = get_available_checkpoints()
+    if available_checkpoints:
+        checkpoint_options = {
+            format_checkpoint_label(path): path
+            for path in available_checkpoints
+        }
+        checkpoint_label = st.sidebar.selectbox(
+            "Experiment checkpoint",
+            list(checkpoint_options),
+        )
+        checkpoint_path = checkpoint_options[checkpoint_label]
+        st.sidebar.caption(f"Checkpoint file: {checkpoint_path.name}")
+    else:
+        checkpoint_path = get_default_checkpoint_path()
+        st.sidebar.warning("No checkpoint files found.")
 
     uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png", "bmp", "webp"])
 
@@ -77,7 +150,7 @@ def main() -> None:
         return
 
     try:
-        model, model_type, device = load_model(str(checkpoint_path), fallback_model_type)
+        model, model_type, device = load_model(str(checkpoint_path))
     except FileNotFoundError as error:
         st.error(str(error))
         st.stop()
@@ -93,7 +166,10 @@ def main() -> None:
     predicted_mask = prediction[0, 0].detach().cpu().numpy()
     overlay = make_overlay(image, predicted_mask)
 
-    st.caption(f"Model: {model_type} | Device: {device} | Inference time: {inference_time:.4f}s")
+    st.caption(
+        f"Checkpoint: {checkpoint_path.name} | Model: {model_type} | "
+        f"Device: {device} | Inference time: {inference_time:.4f}s"
+    )
 
     col1, col2, col3 = st.columns(3)
     with col1:
